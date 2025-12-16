@@ -1,0 +1,698 @@
+---
+title: "Analysis MED 7"
+output: html_document
+date: "2025-12-04"
+---
+
+```{r setup, include=FALSE}
+install.packages(c("ggplot2","tidyverse", "dplyr", "purrr", "readr"))
+library("ggplot2", "tidyverse", "dplyr", "purrr", "readr")
+library(purrr)
+library(dplyr)
+library(tidyr)
+setwd("Documents/UNI AND SCHOOL DOCS/MED7")
+
+```
+
+DATA CLEANING 
+
+```{r cars}
+###### DATA CLEANING
+
+
+# Folder where  15 txt files are
+folder <- "/Users/julia/Documents/UNI AND SCHOOL DOCS/MED7/Data"
+files <- list.files(folder, pattern = "\\.txt$", full.names = TRUE)
+
+#import responses
+folder2 <- "~/Documents/UNI AND SCHOOL DOCS/MED7/responses"
+csv_files <- list.files(folder2, pattern = "\\.csv$", full.names = TRUE)
+
+
+
+process_file <- function(file_path) {
+  lines <- readLines(file_path)
+  
+  # Extract participant from first line
+  participant <- strsplit(lines[1], " - ")[[1]][1]
+  
+  # Find lines with choices
+  choice_lines <- grep("Defensive|Honest", lines)
+  
+  # Prepare storage
+  df <- data.frame(
+    Participant = character(0),
+    Choice = character(0),
+    Stress = numeric(0),
+    Relax = numeric(0),
+    Baseline = numeric(0)
+  )
+  
+  for (i in choice_lines) {
+    choice <- strsplit(lines[i], " ")[[1]][1]  # first word
+    metrics_line <- lines[i + 1]
+    
+    # Extract numeric values
+    stress <- as.numeric(sub(".*Stress: ([0-9]+).*", "\\1", metrics_line))
+    relax  <- as.numeric(sub(".*Relax: ([0-9]+).*", "\\1", metrics_line))
+    baseline  <- as.numeric(sub(".*Baseline: ([0-9]+).*", "\\1", metrics_line))
+    
+    # Append
+    df <- rbind(df, data.frame(
+      Participant = participant,
+      Choice = choice,
+      Stress = stress,
+      Relax = relax,
+      Baseline = baseline
+    ))
+  }
+  
+  return(df)
+}
+
+all_data <- do.call(rbind, lapply(files, process_file))
+
+participants <- unique(all_data$Participant)
+most_choice_list <- list()
+
+for (p in participants) {
+  sub_df <- all_data[all_data$Participant == p, ]
+  choice_counts <- table(sub_df$Choice)
+  
+  max_count <- max(choice_counts)
+  top_choices <- names(choice_counts[choice_counts == max_count])
+  
+  if (length(top_choices) > 1) {
+    most_choice_list[[p]] <- "Mixed"
+  } else {
+    most_choice_list[[p]] <- top_choices
+  }
+}
+
+# Create a data frame
+most_choice_df <- data.frame(
+  Participant = names(most_choice_list),
+  MostChoice = unlist(most_choice_list),
+  stringsAsFactors = FALSE
+)
+all_data$MostChoice <- most_choice_df$MostChoice[match(all_data$Participant, most_choice_df$Participant)]
+
+# Create new column based on Stress vs Relax
+all_data$State <- ifelse(
+  all_data$Stress > all_data$Relax, "Stressed",
+  ifelse(all_data$Stress == 0 & all_data$Relax == 0, "Relaxed", "Relaxed")
+)
+
+participants <- unique(all_data$Participant)
+majority_state_list <- list()
+
+for (p in participants) {
+  sub_df <- all_data[all_data$Participant == p, ]
+  
+  # Count how many Stressed and Relaxed
+  counts <- table(sub_df$State)
+  
+  if (length(counts) == 1) {
+    # All the same
+    majority_state_list[[p]] <- names(counts)
+  } else if (counts["Stressed"] == counts["Relaxed"]) {
+    # Tie 2/2
+    majority_state_list[[p]] <- "Mixed"
+  } else if (counts["Stressed"] > counts["Relaxed"]) {
+    majority_state_list[[p]] <- "Stressed"
+  } else {
+    majority_state_list[[p]] <- "Relaxed"
+  }
+}
+
+# Build dataframe
+majority_state_df <- data.frame(
+  Participant = names(majority_state_list),
+  MajorityState = unlist(majority_state_list),
+  stringsAsFactors = FALSE
+)
+
+# Merge back into all_data
+all_data$MajorityState <- majority_state_df$MajorityState[match(all_data$Participant, majority_state_df$Participant)]
+
+all_data$profile <- paste0(all_data$MostChoice, all_data$MajorityState)
+
+# Create empty columns for percentages
+all_data$StressPerc <- NA
+all_data$RelaxPerc <- NA
+
+# Get unique participants
+participants <- unique(all_data$Participant)
+
+library(dplyr)
+
+all_data <- all_data %>%
+  # Row-wise percentages
+  mutate(
+    TotalPings = Stress + Relax + Baseline,
+    StressPerc = ifelse(TotalPings == 0, 0, Stress / TotalPings * 100),
+    RelaxPerc  = ifelse(TotalPings == 0, 0, Relax  / TotalPings * 100)
+  ) %>%
+  
+  # Participant-level totals
+  group_by(Participant) %>%
+  mutate(
+    P_TotalStress = sum(Stress, na.rm = TRUE),
+    P_TotalRelax  = sum(Relax, na.rm = TRUE),
+    P_TotalBase   = sum(Baseline, na.rm = TRUE),
+    P_TotalPings  = P_TotalStress + P_TotalRelax + P_TotalBase,
+    
+    TotalStressPerc = ifelse(P_TotalPings == 0, 0, P_TotalStress / P_TotalPings * 100),
+    TotalRelaxPerc  = ifelse(P_TotalPings == 0, 0, P_TotalRelax  / P_TotalPings * 100)
+  ) %>%
+  ungroup()
+
+
+
+
+# Add trial number per participant
+all_data$Trial <- ave(seq_along(all_data$Participant), all_data$Participant, FUN = function(x) (seq_along(x) - 1) %% 4 + 1)
+
+
+######### RESPONSES DF #######
+
+# Read all CSVs and combine into one dataframe
+library(readr)
+responses <- map_dfr(csv_files, ~read_csv(.x, show_col_types = FALSE))
+
+
+responses <- responses %>%
+  pivot_wider(
+    id_cols = participant_id,        # Rows per participant
+    names_from = item,        # Make each Question a column
+    values_from = rating          # Fill the cells with Ratings
+  )
+
+
+
+responses <- responses %>%
+  rename(Participant = participant_id)
+
+library(stringr)
+
+combined_df <- all_data %>%
+  mutate(Participant = as.numeric(str_remove(Participant, "Participant "))) %>%
+  left_join(
+    responses %>% mutate(Participant = as.numeric(Participant)),
+    by = "Participant"
+  )
+
+
+combined_df <- combined_df %>%
+  rename(NaturalInt="I feel like the interrogator responded naturally to me.")
+combined_df <- combined_df %>%
+  rename(NaturalStoryDec="I feel like the story transpired naturally according to my decisions.")
+combined_df <- combined_df %>%
+  rename(InterrogatorFeel="I feel like the interrogator knew how I was feeling.")
+combined_df <- combined_df %>%
+  rename(UnderstandAsCharacter="I understood the events in the story as though I were the character.")
+combined_df <- combined_df %>%
+  rename_with(~ "ImagineInSitu", .cols = 27)
+combined_df <- combined_df %>%
+  rename_with(~ "InHead", .cols = 28)
+combined_df <- combined_df %>%
+  rename(ConsequenceCare="I cared about the consequences my character faced.")
+combined_df <- combined_df %>%
+  rename(Absorbed="I felt absorbed in the situation.")
+combined_df <- combined_df %>%
+  rename(ReallyInside="I felt like I was really inside the scene.")
+combined_df <- combined_df %>%
+  rename(FullAttention="My attention was fully focused on what was happening.")
+
+head(combined_df)
+
+all_data <- combined_df
+
+
+```
+
+
+
+
+```{r}
+###### RESPONSES #######
+
+
+summary_df_choices <- all_data %>%
+  group_by(MostChoice) %>%
+  summarise(
+    ValenceMean   = mean(valence.png, na.rm = TRUE),
+    ArousalMean   = mean(arousal.png, na.rm = TRUE),
+    ControlMean   = mean(control.png, na.rm = TRUE),
+    NaturalINtMean   = mean(NaturalInt, na.rm = TRUE),
+    NaturalStoryDecMean   = mean(NaturalStoryDec, na.rm = TRUE),
+    InterrogatorFeelMean   = mean(InterrogatorFeel, na.rm = TRUE),
+    UnderstandingMean   = mean(UnderstandAsCharacter, na.rm = TRUE),
+    ImagineInSituMean   = mean(ImagineInSitu, na.rm = TRUE),
+    InHeadMean   = mean(InHead, na.rm = TRUE),
+    ReallyInsideMean   = mean( ReallyInside, na.rm = TRUE),
+    ConsequenceCareMean   = mean(ConsequenceCare, na.rm = TRUE),
+    AbsorbedMean   = mean(Absorbed, na.rm = TRUE),
+    FullAttentionMean   = mean(FullAttention, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+summary_df_state <- all_data %>%
+  group_by(MajorityState) %>%
+  summarise(
+    ValenceMean   = mean(valence.png, na.rm = TRUE),
+    ArousalMean   = mean(arousal.png, na.rm = TRUE),
+    ControlMean   = mean(control.png, na.rm = TRUE),
+    NaturalINtMean   = mean(NaturalInt, na.rm = TRUE),
+    NaturalStoryDecMean   = mean(NaturalStoryDec, na.rm = TRUE),
+    InterrogatorFeelMean   = mean(InterrogatorFeel, na.rm = TRUE),
+    UnderstandingMean   = mean(UnderstandAsCharacter, na.rm = TRUE),
+    ImagineInSituMean   = mean(ImagineInSitu, na.rm = TRUE),
+    InHeadMean   = mean(InHead, na.rm = TRUE),
+    ReallyInsideMean   = mean( ReallyInside, na.rm = TRUE),
+    ConsequenceCareMean   = mean(ConsequenceCare, na.rm = TRUE),
+    AbsorbedMean   = mean(Absorbed, na.rm = TRUE),
+    FullAttentionMean   = mean(FullAttention, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+
+summary_df_profiles <- all_data %>%
+  group_by(profile) %>%
+  summarise(
+    ValenceMean   = mean(valence.png, na.rm = TRUE),
+    ArousalMean   = mean(arousal.png, na.rm = TRUE),
+    ControlMean   = mean(control.png, na.rm = TRUE),
+    NaturalINtMean   = mean(NaturalInt, na.rm = TRUE),
+    NaturalStoryDecMean   = mean(NaturalStoryDec, na.rm = TRUE),
+    InterrogatorFeelMean   = mean(InterrogatorFeel, na.rm = TRUE),
+    UnderstandingMean   = mean(UnderstandAsCharacter, na.rm = TRUE),
+    ImagineInSituMean   = mean(ImagineInSitu, na.rm = TRUE),
+    InHeadMean   = mean(InHead, na.rm = TRUE),
+    ReallyInsideMean   = mean( ReallyInside, na.rm = TRUE),
+    ConsequenceCareMean   = mean(ConsequenceCare, na.rm = TRUE),
+    AbsorbedMean   = mean(Absorbed, na.rm = TRUE),
+    FullAttentionMean   = mean(FullAttention, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+
+
+```
+
+
+
+```{r}
+
+######################
+#### 1. DATA PREP ####
+######################
+
+# Create Immersion and Identification sums
+all_data <- all_data %>%
+  mutate(
+    immersionsums = rowSums(select(., Absorbed, ReallyInside, FullAttention), na.rm = TRUE),
+    identificationsums = rowSums(select(., UnderstandAsCharacter, ImagineInSitu, InHead, ConsequenceCare), na.rm = TRUE),
+    systemsums = rowSums(select(., NaturalInt, InterrogatorFeel, NaturalStoryDec), na.rm = TRUE),
+    # Physiological stress normalized
+    StressNorm = (P_TotalStress - P_TotalBase) / P_TotalPings,
+    non_baseline_percentage = TotalStressPerc + TotalRelaxPerc
+  )
+
+# Aggregate per participant, profile, state, and choice
+all_data_unique <- all_data %>%
+  group_by(Participant, profile, MajorityState, MostChoice) %>%
+  summarise(
+    valence.png = mean(valence.png, na.rm = TRUE),
+    arousal.png = mean(arousal.png, na.rm = TRUE),
+    control.png = mean(control.png, na.rm = TRUE),
+    systemsums = mean(systemsums, na.rm = TRUE),
+    immersionsums = mean(immersionsums, na.rm = TRUE)/3,
+    identificationsums = mean(identificationsums, na.rm = TRUE)/4,
+    TotalStressPerc = mean(TotalStressPerc, na.rm = TRUE),
+    StressNorm = mean(StressNorm, na.rm = TRUE),
+    non_baseline_percentage=mean(non_baseline_percentage, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+######################
+#### 2. DESCRIPTIVES ####
+######################
+
+# Means and SDs per profile for SAM, Immersion, Identification
+unique_data_means <- all_data_unique %>%
+  group_by(profile) %>%
+  summarise(
+    valence_mean = mean(valence.png), valence_sd = sd(valence.png),
+    arousal_mean = mean(arousal.png), arousal_sd = sd(arousal.png),
+    control_mean = mean(control.png), control_sd = sd(control.png),
+    immersion_mean = mean(immersionsums), immersion_sd = sd(immersionsums),
+    identification_mean = mean(identificationsums), identification_sd = sd(identificationsums)
+  )
+
+#######################################
+### SETUP: Ensure Factors Are Correct ###
+#######################################
+
+all_data_unique$profile       <- factor(all_data_unique$profile)
+all_data_unique$MajorityState <- factor(all_data_unique$MajorityState)
+all_data_unique$MostChoice    <- factor(all_data_unique$MostChoice,
+                                        levels = c("Honest", "Defensive"))
+
+################################
+### 3. SAM ANALYSIS (Val/Aro/Con)
+################################
+
+# SAM variables
+sam_vars <- c("valence.png", "arousal.png", "control.png")
+
+### 3.1 Correlations with stress (continuous)
+lapply(sam_vars, function(v) {
+  cor.test(all_data_unique$StressNorm, all_data_unique[[v]])
+})
+
+### 3.2 Regression: SAM ~ Stress (continuous DV, continuous predictor)
+lm_sam_stress <- lapply(sam_vars, function(v) {
+  lm(as.formula(paste0(v, " ~ StressNorm")), data = all_data_unique)
+})
+lapply(lm_sam_stress, summary)
+
+### 3.3 INTERRACTION Regression: SAM ~  State × Choice (group predictors)
+
+lm_sam_profile <- lapply(sam_vars, function(v) {
+  lm(as.formula(paste0(v, " ~ profile * StressNorm")),
+     data = all_data_unique)
+})
+lapply(lm_sam_profile, anova)
+
+### 3.4 Simple main effects (profile, state, choice)
+# These are just linear models; ANOVA() gives classical test stats
+lapply(sam_vars, function(v) {
+  list(
+    profile = anova(lm(as.formula(paste0(v, " ~ profile")), data = all_data_unique)),
+    state   = anova(lm(as.formula(paste0(v, " ~ MajorityState")), data = all_data_unique)),
+    choice  = anova(lm(as.formula(paste0(v, " ~ MostChoice")), data = all_data_unique))
+  )
+})
+
+
+################################
+### 4. IMMERSION ANALYSIS
+################################
+
+### 4.1 Correlations with stress
+cor.test(all_data_unique$StressNorm,       all_data_unique$immersionsums)
+
+### 4.2 Regression: Immersion ~ profile × StressNorm
+lm_imm <- lm(immersionsums ~ profile * StressNorm, data = all_data_unique)
+anova(lm_imm); summary(lm_imm)
+
+### 4.3 Group comparisons
+anova(lm(immersionsums ~ profile,       data = all_data_unique))
+anova(lm(immersionsums ~ MajorityState, data = all_data_unique))
+anova(lm(immersionsums ~ MostChoice,    data = all_data_unique))
+
+
+################################
+### 5. IDENTIFICATION ANALYSIS
+################################
+
+### 5.1 Correlations with stress
+cor.test(all_data_unique$StressNorm, all_data_unique$identificationsums)
+
+
+### 5.2 Regression: Identification ~ profile × StressNorm
+lm_id <- lm(identificationsums ~ profile * StressNorm, data = all_data_unique)
+anova(lm_id); summary(lm_id)
+
+### 5.3 Group comparisons
+anova(lm(identificationsums ~ profile,       data = all_data_unique))
+anova(lm(identificationsums ~ MajorityState, data = all_data_unique))
+anova(lm(identificationsums ~ MostChoice,    data = all_data_unique))
+
+
+################################
+### 6. SIMPLE T-TESTS
+################################
+
+# direct two-group comparison ("Honest" vs "Defensive")
+all_data_unique_short <- all_data_unique |> 
+  filter(MostChoice %in% c("Honest", "Defensive"))
+
+lapply(sam_vars, function(v) {
+  t.test(as.formula(paste0(v, " ~ MostChoice")), data = all_data_unique_short)
+})
+
+#### ADAPTATION COR TEST
+all_data_unique$systemsums <- (all_data_unique$systemsums)/3
+
+
+summary(lm(systemsums ~ immersionsums, data = all_data_unique))
+summary(lm(systemsums ~ control.png,  data = all_data_unique))
+summary(lm(systemsums ~ identificationsums, data = all_data_unique))
+summary(lm(systemsums ~ valence.png, data = all_data_unique))
+
+
+```
+
+```{r}
+
+######## POST HOC
+
+
+
+ggplot(all_data_unique, aes(x = StressNorm, y = arousal.png)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(x = "Physiological Stress (%)", y = "Self-Reported Arousal", title = "Arousal vs Physiological Stress Across All Participants") +
+  theme_minimal()
+
+model <- lm(arousal.png ~ StressNorm, data = all_data_unique)
+summary(model)
+
+
+####### Across trials ####
+
+m_choice <- lmer(
+  StressPerc ~ Trial * Choice + (1 + Trial | Participant),
+  data = all_data
+)
+summary(m_choice)
+anova(m_choice)
+
+
+m_state <- lmer(
+  StressPerc ~ Trial * State + (1 + Trial | Participant),
+  data = all_data
+)
+summary(m_state)
+
+ggplot(all_data_unique,
+       aes(x = MostChoice, y = valence.png, color = MajorityState, group = MajorityState)) +
+  geom_point(position = position_jitter(width = .1)) +
+  geom_line(stat = "summary", fun = "mean") +
+  theme_minimal()
+
+
+ggplot(all_data, aes(x = Trial, y = StressPerc, color=MostChoice)) +
+  geom_point()+
+  geom_smooth(method = "lm", se = TRUE) +
+  theme_minimal()
+
+ggplot(all_data_unique, aes(MostChoice, valence.png)) +
+  geom_boxplot(fill = "lightblue") +
+  theme_minimal() +
+  labs(y = "Valence", x = "Choice", title = "Valence by Choice")
+
+### immersion and control/valence
+summary(lm(immersionsums ~ control.png, data = all_data_unique))
+summary(lm(immersionsums ~ valence.png, data = all_data_unique))
+```
+
+
+```{r}
+#### Descriptive Stats ####
+mean(all_data$valence.png)
+mean(all_data$arousal.png)
+mean(all_data$control.png)
+sd(all_data$valence.png)
+sd(all_data$arousal.png)
+sd(all_data$control.png)
+mean(all_data$StressNorm)
+sd(all_data$StressNorm)
+mean(all_data$identificationsums)/4
+mean(all_data$immersionsums)/3
+mean(all_data$TotalStressPerc)
+mean(all_data$TotalRelaxPerc)
+sd(all_data$TotalStressPerc)
+sd(all_data$TotalRelaxPerc)
+mean(all_data$systemsums)/3
+sd(all_data$systemsums)/3
+sd(all_data$identificationsums)/4
+sd(all_data$immersionsums)/3
+
+
+all_data_unique %>%
+  group_by(profile) %>%
+  summarise(
+    mean_measure = mean(identificationsums, na.rm = TRUE)/4,
+    sd_measure = sd(identificationsums, na.rm = TRUE)/4
+  )
+
+
+
+
+```
+
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+
+##### Descriptive Plots
+
+### profile counts
+
+ggplot(all_data_unique, aes(x = MostChoice, fill = MajorityState)) +
+  geom_bar(position = "fill") +
+  geom_text(
+    stat = "count", 
+    aes(label = ..count..), 
+    position = position_fill(vjust = 0.5)
+  ) +
+  ylab("Proportion of participants") +
+  xlab("Most Frequent Choice") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  theme_minimal()
+
+###adaptation plots
+
+ggplot(all_data_unique, aes(x = immersionsums, y = systemsums)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(x = "Immersion", y = "Adaptation") +
+  theme_minimal()
+ggplot(all_data_unique, aes(x = valence.png, y = systemsums)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(x = "Valence", y = "Adaptation") +
+  theme_minimal()
+ggplot(all_data_unique, aes(x = control.png, y = systemsums)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(x = "Control", y = "Adaptation") +
+  theme_minimal()
+
+
+
+### profile means for Immersion
+
+ggplot(all_data_unique, aes(x = profile, y = immersionsums, fill = profile)) +
+  stat_summary(fun = mean, geom = "col") +
+  stat_summary(fun.data = mean_cl_boot, geom = "errorbar", width = 0.2) +
+  labs(x = "Participant profile", y = "Mean Immersion Score",
+       title = "Immersion Across Participant profiles") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+### profile means for Identification
+
+ggplot(all_data_unique, aes(x = profile, y = identificationsums, fill = profile)) +
+  stat_summary(fun = mean, geom = "col") +
+  stat_summary(fun.data = mean_cl_boot, geom = "errorbar", width = 0.2) +
+  labs(x = "Participant profile", y = "Mean Identification Score",
+       title = "Identification Across Participant profiles") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+# profile means for SAM measures
+all_data_long <- all_data_unique %>%
+  pivot_longer(
+    cols = c(arousal.png, control.png, valence.png),
+    names_to = "measure",
+    values_to = "value"
+  )
+
+all_data_long$measure <- recode(all_data_long$measure,
+                                "arousal.png" = "Arousal",
+                                "control.png" = "Control",
+                                "valence.png" = "Valence"
+                                )
+
+ggplot(all_data_long, aes(x = profile, y = value, fill = profile)) +
+  stat_summary(fun = mean, geom = "col") +
+  stat_summary(fun.data = mean_cl_boot, geom = "errorbar", width = 0.2) +
+  facet_wrap(~measure, scales = "free_y") +
+  labs(y = "Mean SAM Value", x = "profile") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+# -----------------------------
+# 2a. Regression/analysis plots: SAM, Immersion, Identification
+# -----------------------------
+valence_reg <- ggplot(all_data_unique, aes(x = StressNorm, y = valence.png, color = profile)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", formula = y ~ x, se = TRUE) +
+  labs(x = "Normalized Stress", y = "Valence", title = "Profile × StressNorm: Valence") +
+  theme_classic()
+
+arousal_reg <- ggplot(all_data_unique, aes(x = StressNorm, y = arousal.png, color = profile)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", formula = y ~ x, se = TRUE) +
+  labs(x = "Normalized Stress", y = "Arousal", title = "Profile × StressNorm: Arousal") +
+  theme_classic()
+
+control_reg <- ggplot(all_data_unique, aes(x = StressNorm, y = control.png, color = profile)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", formula = y ~ x, se = TRUE) +
+  labs(x = "Normalized Stress", y = "Control", title = "Profile × StressNorm: Control") +
+  theme_classic()
+
+immersion_reg <- ggplot(all_data_unique, aes(x = StressNorm, y = immersionsums, color = profile)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", formula = y ~ x, se = TRUE) +
+  labs(x = "Normalized Stress", y = "Immersion", title = "Profile × StressNorm: Immersion") +
+  theme_classic()
+
+identification_reg <- ggplot(all_data_unique, aes(x = StressNorm, y = identificationsums, color = profile)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", formula = y ~ x, se = TRUE) +
+  labs(x = "Normalized Stress", y = "Identification", title = "Profile × StressNorm: Identification") +
+  theme_classic()
+
+
+# -----------------------------
+# 2b. Honest vs Defensive valence bar plot
+# -----------------------------
+library(ggplot2)
+valence_bar <- all_data_unique %>%
+  filter(MostChoice %in% c("Honest", "Defensive")) %>%
+  group_by(MostChoice) %>%
+  summarize(mean_val = mean(valence.png, na.rm = TRUE),
+            se_val = sd(valence.png, na.rm = TRUE)/sqrt(n()))
+
+valence_bar_plot <- ggplot(valence_bar, aes(x = MostChoice, y = mean_val, fill = MostChoice)) +
+  geom_bar(stat = "identity", width = 0.6, color = "black") +
+  geom_errorbar(aes(ymin = mean_val - se_val, ymax = mean_val + se_val), width = 0.2) +
+  labs(x = "Choice Type", y = "Valence", title = "Valence: Honest vs Defensive") +
+  theme_classic() +
+  theme(legend.position = "none")
+
+
+valence_reg
+arousal_reg 
+control_reg
+immersion_reg
+identification_reg
+valence_bar
+valence_bar_plot
+
+```
+
+```{r}
+RStudio.Version()
+citation()
+```
+
